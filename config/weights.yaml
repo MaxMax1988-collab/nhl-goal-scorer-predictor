@@ -1,7 +1,7 @@
-form: 0.13
+form: 0.12
 role_pp: 0.24
-matchup: 0.16
-line_quality: 0.17
-residual: 0.08
-hidden_edge: 0.07
-context: 0.15
+matchup: 0.15
+line_quality: 0.18
+residual: 0.09
+hidden_edge: 0.08
+context: 0.14
