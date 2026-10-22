@@ -26,7 +26,12 @@ if st.button("Generuj ranking", type="primary"):
         ranking = generate_ranking(players, top_n=top_n)
         
         st.session_state["ranking"] = ranking
-        st.success("Ranking wygenerowany!")
+        
+        # Zapisujemy do historii
+        from src.utils.history import save_prediction
+        save_prediction(ranking)
+        
+        st.success("Ranking wygenerowany i zapisany do historii!")
 
 # Wyświetlanie rankingu
 if "ranking" in st.session_state:
