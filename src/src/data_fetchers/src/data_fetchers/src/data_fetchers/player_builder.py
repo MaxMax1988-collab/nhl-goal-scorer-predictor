@@ -22,8 +22,23 @@ def fetch_todays_schedule() -> List[dict]:
         return []
 
 
+def fetch_team_roster(team_abbrev: str) -> List[dict]:
+    """Pobiera aktualny skład zawodników (roster) dla danej drużyny z API NHL."""
+    url = f"https://api-web.nhle.com/v1/roster/{team_abbrev}/current"
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            forwards = data.get("forwards", [])
+            return forwards
+        return []
+    except Exception as e:
+        print(f"Błąd pobierania składu dla {team_abbrev}: {e}")
+        return []
+
+
 def get_fallback_players() -> List[PlayerFeatures]:
-    """Zwraca bezpieczną listę testową zawodników w przypadku braku meczów dzisiaj."""
+    """Zwraca bezpieczną listę testową zawodników w przypadku braku meczów dzisiaj lub w przerwie międzysezonowej."""
     return [
         PlayerFeatures(
             player_id="8478402",
@@ -110,8 +125,8 @@ def get_fallback_players() -> List[PlayerFeatures]:
 
 def build_players_for_today() -> List[PlayerFeatures]:
     """
-    Buduje listę obiektów PlayerFeatures na dany dzień.
-    Pobiera mecze z oficjalnego API NHL i przetwarza je.
+    Buduje listę obiektów PlayerFeatures na dany dzień na podstawie oficjalnego API NHL.
+    Pobiera mecze, składy i generuje dane wejściowe dla silnika predykcji.
     """
     games = fetch_todays_schedule()
     
@@ -121,17 +136,47 @@ def build_players_for_today() -> List[PlayerFeatures]:
 
     players = []
     
-    # Przetwarzanie spotkań z oficjalnego harmonogramu NHL
     for game in games:
-        home_team = game.get("homeTeam", {}).get("abbrev", "HOM")
-        away_team = game.get("awayTeam", {}).get("abbrev", "AWY")
+        home_team = game.get("homeTeam", {}).get("abbrev", "")
+        away_team = game.get("awayTeam", {}).get("abbrev", "")
         
-        # W kolejnym etapie w tym miejscu podepniemy dynamiczne pobieranie rosterów 
-        # dla konkretnych spotkań z endpointów klubowych. 
-        # Na ten moment funkcja poprawnie weryfikuje harmonogram live.
-        
-    # Jeśli API zwróciło mecze, ale nie zdążyliśmy rozebrać rosterów na czynniki pierwsze,
-    # jako zabezpieczenie zwracamy na razie fallback, aby interfejs zawsze coś wyświetlił.
+        # Pobieramy składy obu drużyn
+        for team_code, is_home in [(home_team, True), (away_team, False)]:
+            if not team_code:
+                continue
+                
+            forwards = fetch_team_roster(team_code)
+            
+            # Mapujemy pierwszych zawodników ze składu jako czołowych napastników
+            for idx, fwd in enumerate(forwards[:6]):  # Bierzemy TOP 6 napastników (L1 i L2)
+                p_id = str(fwd.get("id", ""))
+                first_name = fwd.get("firstName", {}).get("default", "")
+                last_name = fwd.get("lastName", {}).get("default", "")
+                full_name = f"{first_name} {last_name}".strip()
+                
+                # Przypisanie linii (1 lub 2)
+                line = 1 if idx < 3 else 2
+                pp_unit = 1 if idx < 4 else 2
+                
+                players.append(
+                    PlayerFeatures(
+                        player_id=p_id,
+                        name=full_name if full_name else f"Player_{p_id}",
+                        team=team_code,
+                        line=line,
+                        pp_unit=pp_unit,
+                        recent_goals=0.50,         # Bazowa szacowana średnia goli
+                        recent_sog=3.0,            # Bazowa szacowana średnia strzałów
+                        residual=0.30,
+                        is_home=is_home,
+                        b2b=False,
+                        opponent_goalie_sv=0.905,
+                        matchup_quality=0.65,
+                        line_quality=0.85 if line == 1 else 0.75,
+                        context_score=0.70
+                    )
+                )
+
     if not players:
         return get_fallback_players()
 
