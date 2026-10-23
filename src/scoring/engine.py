@@ -1,5 +1,5 @@
 """
-Silnik punktacji (Scoring Engine) dla NHL Goal Scorer Predictor.
+Silnik punktacji (Scoring Engine) dla NHL Goal Scorer Predictor - wersja zoptymalizowana analitycznie.
 """
 from dataclasses import dataclass
 from typing import List, Dict, Optional
@@ -43,16 +43,32 @@ def load_weights() -> Dict[str, float]:
 
 
 def calculate_player_score(player: PlayerFeatures, weights: Dict[str, float]) -> float:
-    """Oblicza końcowy wynik (score) dla danego zawodnika."""
+    """
+    Oblicza końcowy wynik (score) dla danego zawodnika z uwzględnieniem 
+    realnej dynamiki matchupów (faworyzowanie L2 z dostępem do PP).
+    """
     form_score = (player.recent_goals * 0.6) + (player.recent_sog * 0.1)
     
-    role_pp_score = 1.0 if (player.line == 1 and player.pp_unit == 1) else (
-        0.75 if player.pp_unit == 1 else (
-            0.50 if player.line == 1 else 0.25
-        )
-    )
+    # REALISTYCZNA MATRYCA ROLI I PP (Z uwzględnieniem przewagi L2):
+    # - L1 + PP1 = Klasyczny wybór (mocny, ale obciążony trudnym rywalem) -> 0.95
+    # - L2 + PP1 = Analityczna perełka (słabszy obrońca rywala 5v5 + PP1) -> 1.0 (Najwyższa wartość!)
+    # - L1 + PP2 = 0.70
+    # - L2 + PP2 = 0.60
+    if player.line == 2 and player.pp_unit == 1:
+        role_pp_score = 1.00  # Premia za "L2 Sweet Spot"
+    elif player.line == 1 and player.pp_unit == 1:
+        role_pp_score = 0.95
+    elif player.line == 1 and player.pp_unit == 2:
+        role_pp_score = 0.70
+    elif player.line == 2 and player.pp_unit == 2:
+        role_pp_score = 0.60
+    else:
+        role_pp_score = 0.30
+
+    # Modyfikator matchupu: Jeśli gracz jest w L2, dodajemy mu bonus za unikanie głównej pary obrońców
+    line_matchup_multiplier = 1.15 if player.line == 2 else 1.00
     
-    matchup_score = player.matchup_quality * (1.0 - player.opponent_goalie_sv) * 10
+    matchup_score = player.matchup_quality * (1.0 - player.opponent_goalie_sv) * 10 * line_matchup_multiplier
     
     score = (
         form_score * weights.get("form", 0.12) +
@@ -64,4 +80,4 @@ def calculate_player_score(player: PlayerFeatures, weights: Dict[str, float]) ->
     )
     
     return round(score, 3)
-  
+    
