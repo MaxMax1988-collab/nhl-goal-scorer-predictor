@@ -147,4 +147,3 @@ with tab2:
 # --- Stopka ---
 st.markdown("---")
 st.caption("Pełna automatyzacja NHL Predictor z bazą Supabase. Dane w czasie rzeczywistym.")
-                        
