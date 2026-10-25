@@ -57,16 +57,15 @@ def fetch_actual_goals_for_date(date_str: str) -> dict:
 
 # --- Pobieranie klasyfikacji strzelców z API NHL ---
 def fetch_goal_leaders() -> list:
-    """Pobiera aktualną klasyfikację strzelców (goal leaders) z oficjalnego API NHL."""
-    url = "https://api-web.nhle.com/v1/skater-stats-leaders/current?cayenneExp=seasonId=20242025%20and%20gameTypeId=2"
-    # Uwaga: Jeśli endpoint sezonu wymaga bieżącego roku, można też użyć ogólnego endpointu statystyk lub endpointu liderów.
-    # Użyjemy bezpiecznego i uniwersalnego endpointu liderów ligowych:
-    leaders_url = "https://api.nhle.com/stats/rest/en/leaderboard/skaters/goals?limit=20"
+    """Pobiera aktualną klasyfikację strzelców bezpośrednio z nowego endpointu API NHL."""
+    url = "https://api-web.nhle.com/v1/goal-leaderboard/current"
     try:
-        res = requests.get(leaders_url, timeout=5)
+        res = requests.get(url, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            return data.get("data", [])
+            if isinstance(data, list):
+                return data
+            return data.get("goals", data.get("data", []))
     except Exception as e:
         print(f"Błąd pobierania klasyfikacji strzelców: {e}")
     return []
@@ -247,12 +246,10 @@ with tab4:
     leaders = fetch_goal_leaders()
     
     if not leaders:
-        st.info("Pobieranie klasyfikacji strzelców z oficjalnego API NHL...")
-        # Fallback alternatywnego zapytania, gdyby główny endpoint wymagał dokładnego ID sezonu
-        st.caption("Jeśli lista jest pusta, upewnij się, że API zwraca dane dla aktywnego okna ligowego.")
+        st.info("Brak danych lub trwa pobieranie klasyfikacji strzelców z API NHL.")
     else:
         for idx, player in enumerate(leaders, 1):
-            name = player.get("skaterFullName", "Nieznany")
+            name = player.get("skaterFullName", player.get("name", "Nieznany"))
             team = player.get("teamAbbrev", "—")
             goals = player.get("goals", 0)
             games = player.get("gamesPlayed", 0)
@@ -271,4 +268,4 @@ with tab4:
 # --- Stopka ---
 st.markdown("---")
 st.caption("Pełna automatyzacja NHL Predictor z bazą Supabase. Dane w czasie rzeczywistym.")
-        
+                        
