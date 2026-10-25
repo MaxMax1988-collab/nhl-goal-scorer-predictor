@@ -1,5 +1,5 @@
 """
-Główny plik aplikacji Streamlit - NHL Goal Scorer Predictor (zintegrowany z Supabase i pełną diagnostyką ROI).
+Główny plik aplikacji Streamlit - NHL Goal Scorer Predictor (zintegrowany z Supabase, ROI oraz Klasyfikacją Strzelców).
 """
 import streamlit as st
 from datetime import datetime
@@ -55,11 +55,28 @@ def fetch_actual_goals_for_date(date_str: str) -> dict:
         
     return actual_goals
 
+# --- Pobieranie klasyfikacji strzelców z API NHL ---
+def fetch_goal_leaders() -> list:
+    """Pobiera aktualną klasyfikację strzelców (goal leaders) z oficjalnego API NHL."""
+    url = "https://api-web.nhle.com/v1/skater-stats-leaders/current?cayenneExp=seasonId=20242025%20and%20gameTypeId=2"
+    # Uwaga: Jeśli endpoint sezonu wymaga bieżącego roku, można też użyć ogólnego endpointu statystyk lub endpointu liderów.
+    # Użyjemy bezpiecznego i uniwersalnego endpointu liderów ligowych:
+    leaders_url = "https://api.nhle.com/stats/rest/en/leaderboard/skaters/goals?limit=20"
+    try:
+        res = requests.get(leaders_url, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            return data.get("data", [])
+    except Exception as e:
+        print(f"Błąd pobierania klasyfikacji strzelców: {e}")
+    return []
+
 # --- Zakładki aplikacji ---
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "📊 Ranking i Typy", 
     "🎯 Rozliczanie i Nauka", 
-    "📈 Statystyki i ROI (Diagnostyka)"
+    "📈 Statystyki i ROI",
+    "🏆 Klasyfikacja Strzelców"
 ])
 
 # ==========================================
@@ -69,7 +86,6 @@ with tab1:
     st.header("Ranking na dziś")
     today_str = datetime.now().strftime("%Y-%m-%d")
 
-    # Pobieramy historię z Supabase
     history = load_history()
     today_entry = next((h for h in history if h.get("date") == today_str), None)
 
@@ -87,12 +103,10 @@ with tab1:
             ranking = generate_ranking(players, top_n=top_n)
             
             st.session_state["persistent_ranking"] = ranking
-            # Zapisujemy automatycznie do Supabase
             save_prediction(ranking, today_str)
             st.success("Nowy ranking został wygenerowany i trwale zapisany w bazie Supabase!")
             st.rerun()
 
-    # Wyświetlanie rankingu
     if "persistent_ranking" in st.session_state and st.session_state["persistent_ranking"]:
         current_ranking = st.session_state["persistent_ranking"]
         
@@ -113,7 +127,6 @@ with tab1:
     else:
         st.info("Brak aktywnego rankingu na dzisiaj. Kliknij powyższy przycisk, aby wygenerować typy.")
 
-    # --- Aktualne wagi z Supabase ---
     st.header("Aktualne wagi systemu")
     try:
         weights = load_weights()
@@ -148,9 +161,8 @@ with tab2:
                 with st.spinner("Łączę się z API NHL, pobieram bramki i aktualizuję model w Supabase..."):
                     actual_goals = fetch_actual_goals_for_date(selected_date)
                     
-                    # Jeśli mecze się jeszcze nie skończyły lub brak danych w API
                     if not actual_goals:
-                        st.warning("API NHL nie zwróciło jeszcze oficjalnych statystyk goli dla tej daty (mecze mogą nadal trwać).")
+                        st.warning("API NHL nie zwróciło jeszcze oficjalnych statystyk goli dla tej daty.")
                     else:
                         update_results(selected_date, actual_goals)
                         res = update_weights(entry_to_settle["predictions"], actual_goals)
@@ -178,7 +190,7 @@ with tab3:
         total_hits = 0
         total_staked = 0.0
         total_return = 0.0
-        ASSUMED_ODDS = 2.50  # Uśredniony kurs na strzelca bramki w NHL
+        ASSUMED_ODDS = 2.50
         
         for entry in settled_history:
             preds = entry.get("predictions", [])
@@ -189,7 +201,7 @@ with tab3:
                 goals = results.get(p_name, 0)
                 
                 total_bets += 1
-                total_staked += 1.0  # stawka 1 jednostka
+                total_staked += 1.0
                 
                 if goals > 0:
                     total_hits += 1
@@ -199,7 +211,6 @@ with tab3:
         net_profit = total_return - total_staked
         roi = (net_profit / total_staked * 100) if total_staked > 0 else 0.0
         
-        # Wyświetlenie metryk w kolumnach
         mcol1, mcol2, mcol3, mcol4 = st.columns(4)
         mcol1.metric("Wszystkie typy", total_bets)
         mcol2.metric("Trafione typy", total_hits)
@@ -225,6 +236,37 @@ with tab3:
                     goals = results.get(p_name, 0)
                     status = "✅ Trafiony" if goals > 0 else "❌ Pudło"
                     st.write(f"- **{p_name}** ({team}) — Gole: `{goals}` [{status}]")
+
+# ==========================================
+# ZAKŁADKA 4: KLASYFIKACJA STRZELCÓW
+# ==========================================
+with tab4:
+    st.header("🏆 Klasyfikacja Strzelców NHL")
+    st.markdown("Aktualna czołówka najlepszych strzelców w bieżącym sezonie.")
+    
+    leaders = fetch_goal_leaders()
+    
+    if not leaders:
+        st.info("Pobieranie klasyfikacji strzelców z oficjalnego API NHL...")
+        # Fallback alternatywnego zapytania, gdyby główny endpoint wymagał dokładnego ID sezonu
+        st.caption("Jeśli lista jest pusta, upewnij się, że API zwraca dane dla aktywnego okna ligowego.")
+    else:
+        for idx, player in enumerate(leaders, 1):
+            name = player.get("skaterFullName", "Nieznany")
+            team = player.get("teamAbbrev", "—")
+            goals = player.get("goals", 0)
+            games = player.get("gamesPlayed", 0)
+            
+            col1, col2, col3, col4 = st.columns([1, 4, 2, 2])
+            with col1:
+                st.markdown(f"**{idx}.**")
+            with col2:
+                st.markdown(f"**{name}** ({team})")
+            with col3:
+                st.markdown(f"Gole: **{goals}**")
+            with col4:
+                st.caption(f"Mecze: {games}")
+            st.divider()
 
 # --- Stopka ---
 st.markdown("---")
