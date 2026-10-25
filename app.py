@@ -1,5 +1,5 @@
 """
-Główny plik aplikacji Streamlit - NHL Goal Scorer Predictor (zintegrowany z Supabase, ROI oraz Klasyfikacją Strzelców).
+Główny plik aplikacji Streamlit - NHL Goal Scorer Predictor (wersja stabilna).
 """
 import streamlit as st
 from datetime import datetime
@@ -22,9 +22,8 @@ st.markdown("Autonomiczny, samouczący się system predykcji strzelców NHL z ba
 st.sidebar.header("Ustawienia")
 top_n = st.sidebar.slider("Ile graczy pokazać w rankingu", 5, 15, 10)
 
-# --- Automatyczne pobieranie faktycznych goli z API NHL dla rozliczenia ---
+# --- Pobieranie faktycznych goli z API NHL dla rozliczenia ---
 def fetch_actual_goals_for_date(date_str: str) -> dict:
-    """Automatycznie pobiera faktyczne gole zawodników z zakończonych meczów w danym dniu z API NHL."""
     url = f"https://api-web.nhle.com/v1/schedule/{date_str}"
     actual_goals = {}
     try:
@@ -55,19 +54,27 @@ def fetch_actual_goals_for_date(date_str: str) -> dict:
         
     return actual_goals
 
-# --- Pobieranie klasyfikacji strzelców z API NHL ---
+# --- Bezpieczne pobieranie klasyfikacji strzelców z API NHL ---
 def fetch_goal_leaders() -> list:
-    """Pobiera aktualną klasyfikację strzelców bezpośrednio z nowego endpointu API NHL."""
-    url = "https://api-web.nhle.com/v1/goal-leaderboard/current"
-    try:
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            if isinstance(data, list):
-                return data
-            return data.get("goals", data.get("data", []))
-    except Exception as e:
-        print(f"Błąd pobierania klasyfikacji strzelców: {e}")
+    """Pobiera klasyfikację strzelców z oficjalnych endpointów NHL z obsługą fallbacku."""
+    endpoints = [
+        "https://api-web.nhle.com/v1/skater-stats-leaders/current?cayenneExp=is defenseman=false and gameTypeId=2",
+        "https://api.nhle.com/stats/rest/en/leaderboard/skaters/goals?limit=15"
+    ]
+    for url in endpoints:
+        try:
+            res = requests.get(url, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, list) and data:
+                    return data
+                if isinstance(data, dict):
+                    if "data" in data and data["data"]:
+                        return data["data"]
+                    if "goals" in data and data["goals"]:
+                        return data["goals"]
+        except Exception as e:
+            print(f"Próbuję kolejny endpoint klasyfikacji, błąd: {e}")
     return []
 
 # --- Zakładki aplikacji ---
@@ -98,13 +105,18 @@ with tab1:
 
     if st.button("Generuj nowy ranking na dziś", type="primary"):
         with st.spinner("Pobieram składy z API NHL i obliczam model analityczny..."):
-            players = build_players_for_today()
-            ranking = generate_ranking(players, top_n=top_n)
-            
-            st.session_state["persistent_ranking"] = ranking
-            save_prediction(ranking, today_str)
-            st.success("Nowy ranking został wygenerowany i trwale zapisany w bazie Supabase!")
-            st.rerun()
+            try:
+                players = build_players_for_today()
+                if not players:
+                    st.warning("API NHL nie zwróciło dziś aktywnych zawodników lub mecze się nie odbywają.")
+                else:
+                    ranking = generate_ranking(players, top_n=top_n)
+                    st.session_state["persistent_ranking"] = ranking
+                    save_prediction(ranking, today_str)
+                    st.success("Nowy ranking został wygenerowany i trwale zapisany w bazie Supabase!")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Wystąpił błąd podczas generowania rankingu: {e}")
 
     if "persistent_ranking" in st.session_state and st.session_state["persistent_ranking"]:
         current_ranking = st.session_state["persistent_ranking"]
@@ -124,7 +136,7 @@ with tab1:
             
             st.divider()
     else:
-        st.info("Brak aktywnego rankingu na dzisiaj. Kliknij powyższy przycisk, aby wygenerować typy.")
+        st.info("Brak aktywnego rankingu na dzisiaj. Kliknij przycisk powyżej, aby wygenerować typy.")
 
     st.header("Aktualne wagi systemu")
     try:
@@ -145,7 +157,7 @@ with tab2:
     pending_history = [h for h in history if not h.get("results")]
 
     if not pending_history:
-        st.info("Brak nierozliczonych historii w bazie Supabase. Wszystkie dotychczasowe dni są rozliczone.")
+        st.info("Brak nierozliczonych historii w bazie Supabase. Wszystko jest aktualne.")
     else:
         dates_to_settle = [h["date"] for h in pending_history]
         selected_date = st.selectbox("Wybierz dzień do automatycznego rozliczenia:", dates_to_settle)
@@ -154,21 +166,20 @@ with tab2:
         
         if entry_to_settle:
             st.write(f"Wybrana data do rozliczenia: **{selected_date}**")
-            st.write(f"Liczba typów w tym dniu: {len(entry_to_settle.get('predictions', []))}")
             
             if st.button("Uruchom automatyczne pobieranie wyników i uczenie wag", type="primary"):
-                with st.spinner("Łączę się z API NHL, pobieram bramki i aktualizuję model w Supabase..."):
+                with st.spinner("Łączę się z API NHL, pobieram bramki i aktualizuję model..."):
                     actual_goals = fetch_actual_goals_for_date(selected_date)
                     
                     if not actual_goals:
-                        st.warning("API NHL nie zwróciło jeszcze oficjalnych statystyk goli dla tej daty.")
+                        st.warning("API NHL nie zwróciło jeszcze oficjalnych bramek dla tej daty.")
                     else:
                         update_results(selected_date, actual_goals)
                         res = update_weights(entry_to_settle["predictions"], actual_goals)
                         
                         st.success(
-                            f"Rozliczenie zakończone sukcesem! Trafione: {res['hits']}, "
-                            f"Pudła: {res['misses']}. Wagi w Supabase zostały zoptymalizowane!"
+                            f"Rozliczenie zakończone! Trafione: {res['hits']}, "
+                            f"Pudła: {res['misses']}. Wagi w Supabase zostały zaktualizowane!"
                         )
                         st.rerun()
 
@@ -177,7 +188,7 @@ with tab2:
 # ==========================================
 with tab3:
     st.header("📈 Diagnostyka, Skuteczność i ROI")
-    st.markdown("Statystyki oparte na wszystkich rozliczonych dniach z bazy Supabase (przyjęto uśredniony kurs rynkowy na strzelca **@2.50** przy płaskiej stawce 1 jednostki).")
+    st.markdown("Statystyki oparte na rozliczonych dniach z bazy Supabase (kurs rynkowy **@2.50**, stawka 1 jednostka).")
     
     history = load_history()
     settled_history = [h for h in history if h.get("results")]
@@ -241,19 +252,22 @@ with tab3:
 # ==========================================
 with tab4:
     st.header("🏆 Klasyfikacja Strzelców NHL")
-    st.markdown("Aktualna czołówka najlepszych strzelców w bieżącym sezonie.")
+    st.markdown("Aktualna czołówka najlepszych strzelców w lidze.")
     
     leaders = fetch_goal_leaders()
     
     if not leaders:
-        st.info("Brak danych lub trwa pobieranie klasyfikacji strzelców z API NHL.")
+        st.warning("Aktualnie brak danych z API NHL dla klasyfikacji strzelców (sprawdź połączenie lub status serwerów NHL).")
     else:
         for idx, player in enumerate(leaders, 1):
-            name = player.get("skaterFullName", player.get("name", "Nieznany"))
-            team = player.get("teamAbbrev", "—")
+            name = player.get("skaterFullName", player.get("name", f"{player.get('firstName', '')} {player.get('lastName', '')}")).strip()
+            team = player.get("teamAbbrevs", player.get("teamAbbrev", "—"))
             goals = player.get("goals", 0)
             games = player.get("gamesPlayed", 0)
             
+            if not name or name == " ":
+                name = "Nieznany zawodnik"
+                
             col1, col2, col3, col4 = st.columns([1, 4, 2, 2])
             with col1:
                 st.markdown(f"**{idx}.**")
@@ -268,4 +282,4 @@ with tab4:
 # --- Stopka ---
 st.markdown("---")
 st.caption("Pełna automatyzacja NHL Predictor z bazą Supabase. Dane w czasie rzeczywistym.")
-                        
+            
