@@ -1,3 +1,6 @@
+"""
+Główny plik aplikacji Streamlit - NHL Goal Scorer Predictor (zintegrowany z Supabase i pełną diagnostyką ROI).
+"""
 import streamlit as st
 from datetime import datetime
 import requests
@@ -13,11 +16,11 @@ st.set_page_config(
 )
 
 st.title("🏒 NHL Goal Scorer Predictor")
-st.markdown("Autonomiczny, samouczący się system predykcji strzelców NHL")
+st.markdown("Autonomiczny, samouczący się system predykcji strzelców NHL z bazą Supabase")
 
 # --- Sidebar ---
 st.sidebar.header("Ustawienia")
-top_n = st.sidebar.slider("Ile graczy pokazać", 5, 15, 10)
+top_n = st.sidebar.slider("Ile graczy pokazać w rankingu", 5, 15, 10)
 
 # --- Automatyczne pobieranie faktycznych goli z API NHL dla rozliczenia ---
 def fetch_actual_goals_for_date(date_str: str) -> dict:
@@ -53,33 +56,43 @@ def fetch_actual_goals_for_date(date_str: str) -> dict:
     return actual_goals
 
 # --- Zakładki aplikacji ---
-tab1, tab2 = st.tabs(["📊 Ranking i Typy", "🎯 Automatyczne Rozliczanie i Nauka"])
+tab1, tab2, tab3 = st.tabs([
+    "📊 Ranking i Typy", 
+    "🎯 Rozliczanie i Nauka", 
+    "📈 Statystyki i ROI (Diagnostyka)"
+])
 
+# ==========================================
+# ZAKŁADKA 1: RANKING I TYPY
+# ==========================================
 with tab1:
     st.header("Ranking na dziś")
     today_str = datetime.now().strftime("%Y-%m-%d")
 
-    # Inicjalizacja stanu sesji i pobieranie dzisiejszego rankingu z Supabase, jeśli istnieje
+    # Pobieramy historię z Supabase
+    history = load_history()
+    today_entry = next((h for h in history if h.get("date") == today_str), None)
+
     if "persistent_ranking" not in st.session_state:
-        history = load_history()
-        today_entry = next((h for h in history if h.get("date") == today_str), None)
-        if today_entry:
-            st.session_state["persistent_ranking"] = today_entry.get("predictions", [])
+        if today_entry and today_entry.get("predictions"):
+            st.session_state["persistent_ranking"] = today_entry.get("predictions")
         elif history:
             st.session_state["persistent_ranking"] = history[0].get("predictions", [])
         else:
             st.session_state["persistent_ranking"] = []
 
     if st.button("Generuj nowy ranking na dziś", type="primary"):
-        with st.spinner("Pobieram składy i obliczam model analityczny..."):
+        with st.spinner("Pobieram składy z API NHL i obliczam model analityczny..."):
             players = build_players_for_today()
             ranking = generate_ranking(players, top_n=top_n)
             
             st.session_state["persistent_ranking"] = ranking
+            # Zapisujemy automatycznie do Supabase
             save_prediction(ranking, today_str)
-            st.success("Nowy ranking został wygenerowany i zapisany w Supabase!")
+            st.success("Nowy ranking został wygenerowany i trwale zapisany w bazie Supabase!")
+            st.rerun()
 
-    # Wyświetlanie aktualnego / trwałego rankingu
+    # Wyświetlanie rankingu
     if "persistent_ranking" in st.session_state and st.session_state["persistent_ranking"]:
         current_ranking = st.session_state["persistent_ranking"]
         
@@ -110,14 +123,17 @@ with tab1:
     except Exception as e:
         st.error(f"Nie udało się wczytać wag z Supabase: {e}")
 
+# ==========================================
+# ZAKŁADKA 2: ROZLICZANIE I NAUKA
+# ==========================================
 with tab2:
     st.header("🎯 Automatyczne Rozliczanie Typów i Uczenie Modelu")
     
     history = load_history()
-    pending_history = [h for h in history if h.get("results") is None]
+    pending_history = [h for h in history if not h.get("results")]
 
     if not pending_history:
-        st.info("Brak nierozliczonych historii w bazie Supabase. System czeka na zakończenie meczów.")
+        st.info("Brak nierozliczonych historii w bazie Supabase. Wszystkie dotychczasowe dni są rozliczone.")
     else:
         dates_to_settle = [h["date"] for h in pending_history]
         selected_date = st.selectbox("Wybierz dzień do automatycznego rozliczenia:", dates_to_settle)
@@ -126,24 +142,91 @@ with tab2:
         
         if entry_to_settle:
             st.write(f"Wybrana data do rozliczenia: **{selected_date}**")
+            st.write(f"Liczba typów w tym dniu: {len(entry_to_settle.get('predictions', []))}")
             
             if st.button("Uruchom automatyczne pobieranie wyników i uczenie wag", type="primary"):
-                with st.spinner("Łączę się z API NHL, pobieram gole i aktualizuję model w Supabase..."):
+                with st.spinner("Łączę się z API NHL, pobieram bramki i aktualizuję model w Supabase..."):
                     actual_goals = fetch_actual_goals_for_date(selected_date)
                     
+                    # Jeśli mecze się jeszcze nie skończyły lub brak danych w API
                     if not actual_goals:
-                        for pred in entry_to_settle["predictions"]:
-                            actual_goals[pred["player"]] = 0
-                            
-                    update_results(selected_date, actual_goals)
-                    res = update_weights(entry_to_settle["predictions"], actual_goals)
-                    
-                    st.success(
-                        f"Automatyczne rozliczenie zakończone sukcesem! Trafione: {res['hits']}, "
-                        f"Pudła: {res['misses']}. Wagi w Supabase zostały zoptymalizowane!"
-                    )
-                    st.rerun()
+                        st.warning("API NHL nie zwróciło jeszcze oficjalnych statystyk goli dla tej daty (mecze mogą nadal trwać).")
+                    else:
+                        update_results(selected_date, actual_goals)
+                        res = update_weights(entry_to_settle["predictions"], actual_goals)
+                        
+                        st.success(
+                            f"Rozliczenie zakończone sukcesem! Trafione: {res['hits']}, "
+                            f"Pudła: {res['misses']}. Wagi w Supabase zostały zoptymalizowane!"
+                        )
+                        st.rerun()
+
+# ==========================================
+# ZAKŁADKA 3: DIAGNOSTYKA I ROI
+# ==========================================
+with tab3:
+    st.header("📈 Diagnostyka, Skuteczność i ROI")
+    st.markdown("Statystyki oparte na wszystkich rozliczonych dniach z bazy Supabase (przyjęto uśredniony kurs rynkowy na strzelca **@2.50** przy płaskiej stawce 1 jednostki).")
+    
+    history = load_history()
+    settled_history = [h for h in history if h.get("results")]
+    
+    if not settled_history:
+        st.info("Brak rozliczonych danych historycznych do obliczenia statystyk ROI.")
+    else:
+        total_bets = 0
+        total_hits = 0
+        total_staked = 0.0
+        total_return = 0.0
+        ASSUMED_ODDS = 2.50  # Uśredniony kurs na strzelca bramki w NHL
+        
+        for entry in settled_history:
+            preds = entry.get("predictions", [])
+            results = entry.get("results", {})
+            
+            for p in preds:
+                p_name = p.get("player")
+                goals = results.get(p_name, 0)
+                
+                total_bets += 1
+                total_staked += 1.0  # stawka 1 jednostka
+                
+                if goals > 0:
+                    total_hits += 1
+                    total_return += ASSUMED_ODDS
+        
+        hit_rate = (total_hits / total_bets * 100) if total_bets > 0 else 0.0
+        net_profit = total_return - total_staked
+        roi = (net_profit / total_staked * 100) if total_staked > 0 else 0.0
+        
+        # Wyświetlenie metryk w kolumnach
+        mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+        mcol1.metric("Wszystkie typy", total_bets)
+        mcol2.metric("Trafione typy", total_hits)
+        mcol3.metric("Skuteczność", f"{hit_rate:.1f}%")
+        mcol4.metric("ROI", f"{roi:+.2f}%", delta_color="normal" if roi >= 0 else "inverse")
+        
+        st.markdown("---")
+        st.subheader("Szczegółowa historia rozliczonych dni")
+        
+        for entry in settled_history:
+            d = entry.get("date")
+            preds = entry.get("predictions", [])
+            results = entry.get("results", {})
+            
+            day_hits = sum(1 for p in preds if results.get(p.get("player"), 0) > 0)
+            day_total = len(preds)
+            day_rate = (day_hits / day_total * 100) if day_total > 0 else 0
+            
+            with st.expander(f"📅 Dzień: {d} | Skuteczność: {day_hits}/{day_total} ({day_rate:.1f}%)"):
+                for p in preds:
+                    p_name = p.get("player")
+                    team = p.get("team")
+                    goals = results.get(p_name, 0)
+                    status = "✅ Trafiony" if goals > 0 else "❌ Pudło"
+                    st.write(f"- **{p_name}** ({team}) — Gole: `{goals}` [{status}]")
 
 # --- Stopka ---
 st.markdown("---")
 st.caption("Pełna automatyzacja NHL Predictor z bazą Supabase. Dane w czasie rzeczywistym.")
+        
